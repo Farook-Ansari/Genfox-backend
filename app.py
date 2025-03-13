@@ -1,19 +1,37 @@
 import gspread
 import requests
+import json
+import os
 from google.oauth2.service_account import Credentials
 from flask import Flask, request, jsonify
+from dotenv import load_dotenv
 
 app = Flask(__name__)
 
+# Load environment variables from .env file
+load_dotenv()
+
 # Google Sheets Setup
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-SERVICE_ACCOUNT_FILE = "genfox-676c0e3d8bbd.json"
 SPREADSHEET_ID = "1I9lOXlJbuOzngOIZQA5F2NN9VMsZFEG0IFabiHS2b7s"
 
-# Authenticate and create a client
-creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-client = gspread.authorize(creds)
-sheet = client.open_by_key(SPREADSHEET_ID).sheet1
+# Initialize globals for Google Sheets
+client = None
+sheet = None
+
+# Try to load credentials from the service account file directly
+try:
+    SERVICE_ACCOUNT_FILE = "genfox-676c0e3d8bbd.json"
+    if os.path.exists(SERVICE_ACCOUNT_FILE):
+        print(f"Loading credentials from file: {SERVICE_ACCOUNT_FILE}")
+        creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+        client = gspread.authorize(creds)
+        sheet = client.open_by_key(SPREADSHEET_ID).sheet1
+        print("✅ Google Sheets connection successful!")
+    else:
+        print(f"❌ Service account file {SERVICE_ACCOUNT_FILE} not found")
+except Exception as e:
+    print(f"❌ Error setting up Google Sheets: {str(e)}")
 
 # Bland AI API Config
 BLAND_AI_API_URL = "https://api.bland.ai/call"
@@ -48,9 +66,20 @@ def initiate_bland_ai_call(phone_number, customer_name):
 
 def append_call_data(customer_name, phone_number, mail_address, call_summary):
     """Append call details to Google Sheets."""
-    data = [customer_name, phone_number, mail_address, call_summary]
-    sheet.append_row(data)
-    print(f"✅ Data written for {customer_name} successfully!")
+    global sheet
+    
+    if sheet is None:
+        print("❌ Google Sheets not initialized")
+        return False
+    
+    try:
+        data = [customer_name, phone_number, mail_address, call_summary]
+        sheet.append_row(data)
+        print(f"✅ Data written for {customer_name} successfully!")
+        return True
+    except Exception as e:
+        print(f"❌ Error appending data: {str(e)}")
+        return False
 
 @app.route("/submit-inquiry", methods=["POST"])
 def handle_inquiry():
@@ -72,10 +101,25 @@ def handle_inquiry():
     # Extract transcription (Modify based on actual API response)
     call_summary = call_response.get("transcription", "No transcription available.")
     
-    # Store details in Google Sheets
-    append_call_data(customer_name, phone_number, mail_address, call_summary)
+    # Store details in Google Sheets if possible
+    sheets_success = append_call_data(customer_name, phone_number, mail_address, call_summary)
     
-    return jsonify({"message": "Call initiated and data stored successfully!"}), 200
+    # Return success even if sheets fails, since the call was initiated
+    response_message = "Call initiated successfully!"
+    if not sheets_success:
+        response_message += " (Note: Data could not be stored in Google Sheets)"
+    
+    return jsonify({"message": response_message}), 200
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    """Simple health check endpoint."""
+    status = {
+        "service": "GenFox Inquiry API",
+        "status": "up",
+        "google_sheets": "connected" if sheet is not None else "disconnected",
+    }
+    return jsonify(status)
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
